@@ -1,0 +1,43 @@
+<?php
+/**
+ * Implementation of hook_schema().
+ */
+function download_stats_schema() {
+  
+  $schema['download_stats_day'] = array(
+    'description' => t('file download traffic by day'),
+    'fields' => array(
+      'day' => array(
+        'description' => 'Primary Key: timestamp of the Day',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'traffic' => array(
+        'description' => t('The amount of bandwidth usage for the total day.'),
+        'type' => 'int',
+        'size' => 'big',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ),
+    'primary key' => array('day'),
+  );
+  return $schema;
+}
+
+/**
+ * Implementation of hook_install().
+ */
+function download_stats_install() {
+  drupal_install_schema('download_stats');
+}
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function download_stats_uninstall() {
+  drupal_uninstall_schema('download_stats');
+  db_query("DELETE FROM {variable} WHERE name LIKE 'download_stats_%'");
+}

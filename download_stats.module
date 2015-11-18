@@ -1,0 +1,284 @@
+<?php
+
+/**
+ *  implementation of HOOK_cron
+ *  reads the table download_count and the table files and fills the download_stats table with the data to generate some statistics
+ */
+function download_stats_cron(){
+	
+	$lastrun=intval(variable_get("download_stats_lastrun", 0));
+	$result=db_query("SELECT d.timestamp, f.filesize FROM {download_count} d
+			 INNER JOIN {files} f ON d.fid = f.fid WHERE d.timestamp > %d ORDER by d.timestamp", $lastrun);
+	$updates=array();
+	//for each entry in the log, increment the stat-tables
+	while ($row = db_fetch_array($result)) {
+		if ($lastrun<$row['timestamp']){
+			$lastrun=$row['timestamp'];
+			//set start point for next run, set befor any updates to avoid duplicates, this is slow, but without duplicate entries could happen
+			variable_set("download_stats_lastrun", $lastrun);
+		}
+
+		$day=$row['timestamp'] - ($row['timestamp'] % 86400); //round to full day
+		
+		//insert/update into file day table
+		$res=db_query("UPDATE {download_stats_day} SET traffic=traffic+%d WHERE day = %d",array($row['filesize'], $day));
+		if (db_affected_rows()<=0)
+			$res=db_query("INSERT  INTO {download_stats_day} (day, traffic) VALUES (%d, %d)",array($day, $row['filesize']));
+	}
+	
+}
+
+/**
+ *  implementation of HOOK_block
+ */
+function download_stats_block($op = 'list', $delta = 0, $edit = array()) {
+   $block = array();
+   switch ($op) {
+    // add our blocks to the block configuration screen
+    case 'list':
+        $block[0] = array(
+          'info' => t('Download Stats site traffic'),
+	  'cache' => BLOCK_CACHE_GLOBAL,  
+        );
+	$block[1] = array(
+          'info' => t('Download Stats MBW per mirror'),
+	  'cache' => BLOCK_CACHE_GLOBAL,  
+        );
+        return $block;
+    case 'view':
+        switch ($delta) {
+        case 0:
+		$date=time();
+		$output.= _download_stats_display_yearly($date);
+		$output.= _download_stats_display_monthly($date);
+		$output.= _download_stats_display_weekly($date);
+		$output.= _download_stats_display_daily($date);	
+		$block = array(
+                  'content' => $output,
+                );
+            break;  
+        case 1:
+		$date=time();
+		$output.= _download_stats_per_mirror($date);
+		$block = array(
+                  'content' => $output,
+                );
+            break;  
+	}
+	return $block;
+    }
+}
+
+//creates the title bars for the statistics output
+function _download_stats_create_head($title){
+	return "<h2>".$title."</h2>";
+}
+
+/**
+ *	display bandwidth usage per mirror
+ *	@param $date is the startdate
+ *	@param $days is count of days to display
+ */
+function _download_stats_per_mirror($date, $days=100){
+	//normalize date
+	    $output.=_download_stats_create_head("Bandwidth usage per mirror for the current month");
+	    $result = db_query("select title, mbw from {file_mirror} ORDER BY mbw DESC");
+	    $arr=array();
+	    $max=0;
+	    while ($row = db_fetch_array($result)) {
+			    if ($max<$row['mbw'])
+					    $max=$row['mbw'];
+			    $arr[]=$row;
+	    }
+	    foreach($arr as $row){
+		    $output.= "<table><tr>";
+		    $output.= "<td width=150>".$row['title']."</td>";
+		    $output.= "<td>"._download_stats_create_bar($row['mbw'], $max, _download_stats_format_filesize($row['mbw'] ))."</td>";
+		    $output.= "</tr></table>";
+	    }
+	    	    $output.=_download_stats_create_head("Bandwidth usage per mirror TOTAL");
+	    $result = db_query("select title, tbw from {file_mirror} ORDER BY tbw DESC");
+	    $arr=array();
+	    $max=0;
+	    while ($row = db_fetch_array($result)) {
+			    if ($max<$row['tbw'])
+					    $max=$row['tbw'];
+			    $arr[]=$row;
+	    }
+	    foreach($arr as $row){
+		    $output.= "<table><tr>";
+		    $output.= "<td width=150>".$row['title']."</td>";
+		    $output.= "<td>"._download_stats_create_bar($row['tbw'], $max, _download_stats_format_filesize($row['tbw'] ))."</td>";
+		    $output.= "</tr></table>";
+	    }
+
+	return $output;
+}
+
+/**
+ *	display dayly statistics
+ *	@param $date is the startdate
+ *	@param $days is count of days to display
+ */
+function _download_stats_display_daily($date, $days=100){
+	//normalize date
+	    $output=_download_stats_create_head("Download traffic last $days days");
+	    $date = $date - ($date % 86400);
+	    $end = $date - $days * 86400;
+	    
+	    $result = db_query("select day, traffic from {download_stats_day} where day<=%d and day>=%d ORDER BY day DESC", $date, $end );
+	    $arr=array();
+	    $max=0;
+	    while ($row = db_fetch_array($result)) {
+			    if ($max<$row['traffic'])
+					    $max=$row['traffic'];
+			    $arr[]=$row;
+	    }
+	    foreach($arr as $row){
+		    $output.= "<table><tr>";
+		    $output.= "<td width=75>".strftime("%Y.%m.%d",$row['day'])."</td>";
+		    $output.= "<td>"._download_stats_create_bar($row['traffic'], $max, _download_stats_format_filesize($row['traffic'] ))."</td>";
+		    $output.= "</tr></table>";
+	    }
+	return $output;
+}
+
+/**
+ *	display monthly statistics
+ *	@param $date is the startdate
+ *	@param $months is count of months to display
+ */
+function _download_stats_display_monthly($date, $months=48){
+	$output=_download_stats_create_head("Download traffic last $months months");
+	$montsec=2678400; //seconds a month has
+	$enddate=$date - ($montsec*$months);
+	$result=db_query("SELECT day, FROM_UNIXTIME(day,'%Y/%m') as month, sum(traffic) as sumcount FROM {download_stats_day} WHERE day<=%d and day>=$enddate GROUP by month ORDER by month DESC",$date, $enddate);
+	$arr=array();
+	$max=0;
+	while ($row = db_fetch_array($result)) {
+			if ($max<$row['sumcount'])
+					$max=$row['sumcount'];
+			$arr[]=$row;
+	}
+	foreach($arr as $row){
+		$output.= "<table><tr>";
+		$output.= "<td width=75>".$row['month']."</td>";
+		$output.= "<td>"._download_stats_create_bar($row['sumcount'], $max, _download_stats_format_filesize($row['sumcount'] ))."</td>";
+		$output.= "</tr></table>";
+	}
+	return $output;
+}
+
+/**
+ *	display yearly statistics
+ *	@param $date is the startdate
+ *	@param $years is count of years to display
+ */
+function _download_stats_display_yearly($date, $years=10){
+	$output=_download_stats_create_head("Download traffic last $years years");
+	$yearsec=32140800; //seconds a year has
+	$enddate=$date - ($yearsec*$years);
+	$result=db_query("SELECT day, FROM_UNIXTIME(day,'%Y') as year, sum(traffic) as sumcount FROM {download_stats_day} WHERE day<=%d and day>=$enddate GROUP by year ORDER by year DESC",$date, $enddate);
+	$arr=array();
+	$max=0;
+	while ($row = db_fetch_array($result)) {
+			if ($max<$row['sumcount'])
+					$max=$row['sumcount'];
+			$arr[]=$row;
+	}
+	foreach($arr as $row){
+		$output.= "<table><tr>";
+		$output.= "<td width=75>".$row['year']."</td>";
+		if ($row['year'] == 2009) $row['sumcount'] *= 5;
+		$output.= "<td>"._download_stats_create_bar($row['sumcount'], $max, _download_stats_format_filesize($row['sumcount'] ))."</td>";
+		$output.= "</tr></table>";
+	}
+	return $output;
+}
+
+/**
+ *	display weekly statistics
+ *	@param $date is the startdate
+ *	@param $weeks is count of weeks to display
+ */
+function _download_stats_display_weekly($date, $weeks=54){
+	
+	$output=_download_stats_create_head("Download traffic last $weeks weeks");
+	$weeksec=604800; //seconds a week has
+	$enddate=$date - ($weeksec*$weeks);
+	$result=db_query("SELECT day, FROM_UNIXTIME(day,'%Y/%v') as week, sum(traffic) as sumcount FROM {download_stats_day} WHERE day<=%d and day>=%d GROUP by week ORDER by week DESC",$date, $enddate);
+	$arr=array();
+	$max=0;
+	while ($row = db_fetch_array($result)) {
+			if ($max<$row['sumcount'])
+					$max=$row['sumcount'];
+			$arr[]=$row;
+	}
+	unset($arr[0]);
+	foreach($arr as $key => $row){
+		$output.= "<table><tr>";
+		$output.= "<td width=75>".$row['week']."</td>";
+		$output.= "<td>"._download_stats_create_bar($row['sumcount'], $max, _download_stats_format_filesize($row['sumcount'] ))."</td>";
+		$output.= "</tr></table>";
+	}
+	return $output;
+}
+
+//create the graphical css bars
+function _download_stats_create_bar($width, $maxnumber, $show_text="",$table_width=670){
+	$bar = "";
+	if ($maxnumber)
+		$percent = ($width / $maxnumber);
+	else
+		$percent=0;
+	//width in pixel (0-100)
+	$width = round($table_width * $percent);
+	//brightest color:#114 236  35
+	//darkest color:  # 20  40  00
+	$color = sprintf('#%02X%02X%02X', 20+round($percent *94),40 + round($percent*196),round($percent*35));
+
+	$bar .= '
+	<table style="width: '.$table_width.'px; height:8px; border: 1px solid #333333; " cellpadding="0" cellspacing="0">
+	<tr>
+		<td style="background-color:#222222; height: 8px;">
+			<div style="width:'.$width.'px; background-color:'.$color.'; color: #000; line-height: 0.8em; font-size: 9px; text-align: right; height: 9px; margin: 0 0 0 0; padding: 2px 0 0 0; ">'.$show_text.'</div>
+		</td>
+	</tr>
+	</table>
+	';
+	
+	return $bar;
+}
+
+//replacement for the drupal function format_size
+function _download_stats_format_filesize($filesize, $precision = 2, $format = "byte") {
+    switch ($format) {
+	case "byte":
+	    $suffixes = array("B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB");
+	    $power_div = 1024;
+	break;
+	case "byte-si":
+	    $suffixes = array("B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB");
+	    $power_div = 1000;
+	break;
+	case "bits":
+	    $suffixes = array("b", "kb", "Mb", "Gb", "Tb", "Pb", "Eb", "Zb", "Yb");
+	    $filesize *= 8;
+	    $power_div = 1000;
+	break;
+	default:
+	    die(t("No valid file size format specified."));
+	}
+    $power = floor(log($filesize, $power_div));
+    $suffix = t($suffixes[$power]);
+    if ($power > 0) {
+	$filesize = number_format($filesize / pow($power_div, $power), $precision);
+    }
+    return t(
+    "@filesize @suffix",
+    array(
+    '@filesize' => $filesize,
+    '@suffix' => $suffix
+    )
+    );
+}

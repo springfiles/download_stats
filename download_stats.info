@@ -1,0 +1,5 @@
+name = Download Stats
+description = "gathers bandwidth usage stats from the download_count module"
+core = 6.x
+package = Statistics
+dependencies[] = download_count
